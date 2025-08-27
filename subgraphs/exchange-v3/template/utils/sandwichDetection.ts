@@ -3,27 +3,27 @@ import { BigDecimal, BigInt, log } from "@graphprotocol/graph-ts";
 import { Pool, Token } from "../generated/schema";
 import { ZERO_BD } from "./constants";
 
-export class DeviationThresholds {
-  static EXTREME: BigDecimal = BigDecimal.fromString("30");
-  static SUSPICIOUS: BigDecimal = BigDecimal.fromString("15");
-  static NORMAL: BigDecimal = BigDecimal.fromString("5");
-}
+export const DeviationThresholds = {
+  EXTREME: BigDecimal.fromString("30"),
+  SUSPICIOUS: BigDecimal.fromString("15"),
+  NORMAL: BigDecimal.fromString("5")
+};
 
-export class LiquidityImpactThresholds {
-  static HIGH: BigDecimal = BigDecimal.fromString("0.1");
-  static MEDIUM: BigDecimal = BigDecimal.fromString("0.05");
-  static LOW: BigDecimal = BigDecimal.fromString("0.01");
-}
+export const LiquidityImpactThresholds = {
+  HIGH: BigDecimal.fromString("0.1"),
+  MEDIUM: BigDecimal.fromString("0.05"),
+  LOW: BigDecimal.fromString("0.01")
+};
 
-export class AttackSeverity {
-  static NONE: string = "NONE";
-  static LOW: string = "LOW";
-  static MEDIUM: string = "MEDIUM";
-  static HIGH: string = "HIGH";
-  static CRITICAL: string = "CRITICAL";
-}
+export const AttackSeverity = {
+  NONE: "NONE",
+  LOW: "LOW",
+  MEDIUM: "MEDIUM",
+  HIGH: "HIGH",
+  CRITICAL: "CRITICAL"
+} as const;
 
-export class SandwichAttackResult {
+export interface SandwichAttackResult {
   isDetected: boolean;
   severity: string;
   deviation: BigDecimal;

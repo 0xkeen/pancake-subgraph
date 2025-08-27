@@ -91,7 +91,7 @@ function calculatePriceFromPools(token: Token): BigDecimal {
   return bestPrice;
 }
 
-class PriceData {
+interface PriceData {
   price: BigDecimal;
   liquidityETH: BigDecimal;
 }
