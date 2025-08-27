@@ -350,22 +350,29 @@ export function handleSwap(event: SwapEvent): void {
   pool.save();
 
   let token0DerivedETH = token0.derivedETH;
+  let token1DerivedETH = token1.derivedETH;
 
   // update USD pricing
   bundle.ethPriceUSD = getEthPriceInUSD();
   bundle.save();
-  token0.derivedETH = findEthPerToken(token0 as Token);
-  token1.derivedETH = findEthPerToken(token1 as Token);
-
+  
   let transaction = loadTransaction(event);
-
-  // fix for bad pricing on wbtc-weth 18450862
-  if (transaction.blockNumber.equals(BigInt.fromI32(18450862))) {
-    if (token0.id == "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599") {
-      log.warning("bad pricing id: {}, token0: {}", [transaction.id, token0.derivedETH.toString()]);
-      token0.derivedETH = token0DerivedETH;
-    }
-  }
+  
+  token0.derivedETH = findEthPerToken(
+    token0 as Token, 
+    token0DerivedETH, 
+    transaction.blockNumber, 
+    pool as Pool,
+    amount0Abs
+  );
+  
+  token1.derivedETH = findEthPerToken(
+    token1 as Token, 
+    token1DerivedETH, 
+    transaction.blockNumber, 
+    pool as Pool,
+    amount1Abs
+  );
 
   token0.derivedUSD = token0.derivedETH.times(bundle.ethPriceUSD);
   token1.derivedUSD = token1.derivedETH.times(bundle.ethPriceUSD);

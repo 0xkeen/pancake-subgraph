@@ -1,8 +1,14 @@
 /* eslint-disable prefer-const */
 import { ONE_BD, ZERO_BD, ZERO_BI } from "./constants";
 import { Bundle, Pool, Token } from "../generated/schema";
-import { BigDecimal, BigInt } from "@graphprotocol/graph-ts";
+import { BigDecimal, BigInt, log } from "@graphprotocol/graph-ts";
 import { exponentToBigDecimal, safeDiv } from "./index";
+import { 
+  detectSandwichAttack, 
+  applyPriceAdjustment, 
+  hasSpecialCaseFix, 
+  applySpecialCaseFix 
+} from "./sandwichDetection";
 
 // prettier-ignore
 const WETH_ADDRESS = "0x5aea5775959fbc2557cc8789bc1bf90a239d9a91";
@@ -44,62 +50,117 @@ export function getEthPriceInUSD(): BigDecimal {
   }
 }
 
-/**
- * Search through graph to find derived Eth per token.
- * @todo update to be derived ETH (add stablecoin estimates)
- **/
-export function findEthPerToken(token: Token): BigDecimal {
+function calculateBaseEthPrice(token: Token): BigDecimal {
   if (token.id == WETH_ADDRESS) {
     return ONE_BD;
   }
+
+  let bundle = Bundle.load("1");
+  
+  // hardcoded fix for incorrect rates
+  // if whitelist includes token - get the safe price
+  if (STABLE_COINS.includes(token.id)) {
+    return safeDiv(ONE_BD, bundle.ethPriceUSD);
+  }
+  
+  return calculatePriceFromPools(token);
+}
+
+function calculatePriceFromPools(token: Token): BigDecimal {
   let whiteList = token.whitelistPools;
   // for now just take USD from pool with greatest TVL
   // need to update this to actually detect best rate based on liquidity distribution
   let largestLiquidityETH = ZERO_BD;
-  let priceSoFar = ZERO_BD;
-  let bundle = Bundle.load("1");
+  let bestPrice = ZERO_BD;
 
-  // hardcoded fix for incorrect rates
-  // if whitelist includes token - get the safe price
-  if (STABLE_COINS.includes(token.id)) {
-    priceSoFar = safeDiv(ONE_BD, bundle.ethPriceUSD);
-  } else {
-    for (let i = 0; i < whiteList.length; ++i) {
-      let poolAddress = whiteList[i];
-      let pool = Pool.load(poolAddress);
+  for (let i = 0; i < whiteList.length; ++i) {
+    let poolAddress = whiteList[i];
+    let pool = Pool.load(poolAddress);
 
-      if (pool.liquidity.gt(ZERO_BI)) {
-        if (pool.token0 == token.id) {
-          // whitelist token is token1
-          let token1 = Token.load(pool.token1);
-          // get the derived ETH in pool
-          let ethLocked = pool.totalValueLockedToken1.times(token1.derivedETH);
-          if (
-            ethLocked.gt(largestLiquidityETH) &&
-            (ethLocked.gt(MINIMUM_ETH_LOCKED) || WHITELIST_TOKENS.includes(pool.token0))
-          ) {
-            largestLiquidityETH = ethLocked;
-            // token1 per our token * Eth per token1
-            priceSoFar = pool.token1Price.times(token1.derivedETH as BigDecimal);
-          }
-        }
-        if (pool.token1 == token.id) {
-          let token0 = Token.load(pool.token0);
-          // get the derived ETH in pool
-          let ethLocked = pool.totalValueLockedToken0.times(token0.derivedETH);
-          if (
-            ethLocked.gt(largestLiquidityETH) &&
-            (ethLocked.gt(MINIMUM_ETH_LOCKED) || WHITELIST_TOKENS.includes(pool.token1))
-          ) {
-            largestLiquidityETH = ethLocked;
-            // token0 per our token * ETH per token0
-            priceSoFar = pool.token0Price.times(token0.derivedETH as BigDecimal);
-          }
-        }
+    if (pool.liquidity.gt(ZERO_BI)) {
+      let priceData = extractPriceFromPool(pool, token);
+      
+      if (priceData.liquidityETH.gt(largestLiquidityETH) && 
+          isPriceReliable(priceData.liquidityETH, pool, token)) {
+        largestLiquidityETH = priceData.liquidityETH;
+        bestPrice = priceData.price;
       }
     }
   }
-  return priceSoFar; // nothing was found return 0
+  
+  return bestPrice;
+}
+
+class PriceData {
+  price: BigDecimal;
+  liquidityETH: BigDecimal;
+}
+
+function extractPriceFromPool(pool: Pool, targetToken: Token): PriceData {
+  let result: PriceData = { price: ZERO_BD, liquidityETH: ZERO_BD };
+  
+  if (pool.token0 == targetToken.id) {
+    // whitelist token is token1
+    let token1 = Token.load(pool.token1);
+    // get the derived ETH in pool
+    result.liquidityETH = pool.totalValueLockedToken1.times(token1.derivedETH);
+    // token1 per our token * Eth per token1
+    result.price = pool.token1Price.times(token1.derivedETH as BigDecimal);
+  } else if (pool.token1 == targetToken.id) {
+    let token0 = Token.load(pool.token0);
+    // get the derived ETH in pool
+    result.liquidityETH = pool.totalValueLockedToken0.times(token0.derivedETH);
+    // token0 per our token * ETH per token0
+    result.price = pool.token0Price.times(token0.derivedETH as BigDecimal);
+  }
+  
+  return result;
+}
+
+function isPriceReliable(liquidityETH: BigDecimal, pool: Pool, token: Token): boolean {
+  return liquidityETH.gt(MINIMUM_ETH_LOCKED) || 
+         WHITELIST_TOKENS.includes(pool.token0) || 
+         WHITELIST_TOKENS.includes(pool.token1);
+}
+
+export function findEthPerToken(
+  token: Token,
+  previousPrice?: BigDecimal,
+  blockNumber?: BigInt,
+  pool?: Pool,
+  swapAmount?: BigDecimal
+): BigDecimal {
+  let currentPrice = calculateBaseEthPrice(token);
+  
+  if (blockNumber && hasSpecialCaseFix(token, blockNumber)) {
+    return applySpecialCaseFix(token, blockNumber, previousPrice || currentPrice, currentPrice);
+  }
+  
+  if (shouldValidatePrice(previousPrice, currentPrice) && pool && swapAmount && blockNumber) {
+    let detection = detectSandwichAttack(
+      pool,
+      token,
+      previousPrice!,
+      currentPrice,
+      swapAmount,
+      blockNumber
+    );
+    
+    if (detection.isDetected) {
+      currentPrice = applyPriceAdjustment(previousPrice!, currentPrice, detection);
+    }
+  }
+  
+  return currentPrice;
+}
+
+function shouldValidatePrice(
+  previousPrice: BigDecimal | undefined, 
+  currentPrice: BigDecimal
+): boolean {
+  return previousPrice !== undefined && 
+         previousPrice.gt(ZERO_BD) && 
+         currentPrice.gt(ZERO_BD);
 }
 
 /**
